@@ -7,8 +7,8 @@ plugins {
 
 android {
     namespace = "com.example.object_detection"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    compileSdk = 34 // Android SDK 버전에 맞게 설정
+    ndkVersion = "25.2.9519653" // Android NDK 버전에 맞게 설정
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
@@ -16,27 +16,37 @@ android {
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_1_8
+        jvmTarget = "1.8"
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.object_detection"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 26
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        resConfigs "en", "ko"
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            minifyEnabled true // 코드 난독화
+            shrinkResources true // 리소스 축소 활성화
             signingConfig = signingConfigs.debug
         }
     }
+
+    aaptOptions {
+        noCompress 'tflite'
+        noCompress 'lite'
+    }
+}
+
+dependencies {
+    implementation 'org.tensorflow:tensorflow-lite:2.14.0' // 최신 버전으로 업데이트
+    implementation 'org.tensorflow:tensorflow-lite-gpu:2.14.0' // 최신 버전으로 업데이트
+    implementation 'org.tensorflow:tensorflow-lite-select-tf-ops:2.14.0'
 }
 
 flutter {

@@ -45,5 +45,8 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	    <!-- 추가 설정 -->
+    <key>NSCameraUsageDescription</key>
+    <string>앱이 카메라를 사용하여 사진을 촬영하거나 동영상을 녹화합니다.</string>
 </dict>
 </plist>
