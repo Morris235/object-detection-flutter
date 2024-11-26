@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -82,7 +83,7 @@ Future<void> _initializeCamera() async {
       int processFrameCount = 0;
       await _cameraController!.startImageStream((image) {
         processFrameCount++;
-        if (processFrameCount % 15 == 0) {  // 30fps 기준으로 2fps로 제한
+        if (processFrameCount % 30 == 0) {  // 30fps 기준으로 2fps로 제한
           _processCameraImage(image);
         }
       });
@@ -97,9 +98,8 @@ Future<void> _initializeCamera() async {
 Future<void> _loadModel() async {
   try {
     final options = InterpreterOptions()
-      ..threads = 2;  // CPU 스레드 수 설정
+      ..threads = 2;
     
-    // Android용 GPU 가속
     if (Platform.isAndroid) {
       try {
         final gpuDelegate = GpuDelegateV2();
@@ -110,7 +110,6 @@ Future<void> _loadModel() async {
       }
     }
     
-    // iOS용 GPU 가속
     if (Platform.isIOS) {
       try {
         final gpuDelegate = GpuDelegate();
@@ -121,14 +120,14 @@ Future<void> _loadModel() async {
       }
     }
 
+    // YOLO 모델로 변경
     _interpreter = await Interpreter.fromAsset(
-      'assets/mobilenet_v1_1.0_224.tflite',
+      'assets/yolov2_tiny.tflite',
       options: options,
     );
     
     _interpreter.allocateTensors();
     
-    // 모델 정보 출력
     final inputShape = _interpreter.getInputTensor(0).shape;
     final outputShape = _interpreter.getOutputTensor(0).shape;
     debugPrint('Model loaded successfully');
@@ -143,7 +142,7 @@ Future<void> _loadModel() async {
   Future<void> _loadLabels() async {
     try {
       final labelText = await DefaultAssetBundle.of(context)
-          .loadString('assets/labels.txt');
+          .loadString('assets/yolov2_tiny.txt');
       _labels = labelText.split('\n');
       debugPrint('Labels loaded successfully: ${_labels?.length} labels');
       debugPrint('First few labels: ${_labels?.take(5).join(", ")}');
@@ -154,78 +153,118 @@ Future<void> _loadModel() async {
 
 
 Future<void> _processCameraImage(CameraImage cameraImage) async {
-    if (_isDetecting) return;
-    _isDetecting = true;
+  if (_isDetecting) return;
+  _isDetecting = true;
 
-    try {
-      final image = Platform.isIOS 
-          ? _convertBGRA8888ToImage(cameraImage)
-          : _convertYUV420ToImage(cameraImage);
-          
-      if (image == null) return;
+  try {
+    final image = Platform.isIOS 
+        ? _convertBGRA8888ToImage(cameraImage)
+        : _convertYUV420ToImage(cameraImage);
+        
+    if (image == null) return;
 
-      // 224x224로 리사이징
-      final resizedImage = img.copyResize(
-        image, 
-        width: 224,
-        height: 224,
-        interpolation: img.Interpolation.linear
-      );
+    // YOLO 입력 크기 416x416으로 조정
+    final resizedImage = img.copyResize(
+      image, 
+      width: 416,
+      height: 416,
+      interpolation: img.Interpolation.linear
+    );
 
-      // 입력 텐서 준비
-      final inputArray = List.generate(
-        1,
-        (index) => List.generate(
-          224,
-          (y) => List.generate(
-            224,
-            (x) => List.generate(
-              3,
-              (c) {
-                final pixel = resizedImage.getPixel(x, y);
-                return [pixel.r, pixel.g, pixel.b][c];
-              },
-            ),
+    // 입력 텐서 준비 (정규화 추가)
+    final inputArray = List.generate(
+      1,
+      (index) => List.generate(
+        416,
+        (y) => List.generate(
+          416,
+          (x) => List.generate(
+            3,
+            (c) {
+              final pixel = resizedImage.getPixel(x, y);
+              // YOLO 정규화: 0-255 범위를 0-1 범위로 변환
+              return [pixel.r / 255.0, pixel.g / 255.0, pixel.b / 255.0][c];
+            },
           ),
         ),
-      );
+      ),
+    );
 
-      // 출력 텐서 준비
-      final outputShape = _interpreter.getOutputTensor(0).shape;
-      final outputArray = List.generate(
-        outputShape[0],
-        (index) => List<double>.filled(outputShape[1], 0.0),
-      );
+    // 출력 텐서 준비
+    final outputArray = List.generate(
+      1,
+      (index) => List.generate(
+        13,
+        (y) => List.generate(
+          13,
+          (x) => List<double>.filled(425, 0.0),
+        ),
+      ),
+    );
 
-      // 모델 실행
-      _interpreter.run(inputArray, outputArray);
+    // 모델 실행
+    _interpreter.run(inputArray, outputArray);
 
-      // 모든 결과를 처리하고 정렬
-      final results = <String, double>{};
-      for (var i = 0; i < outputShape[1]; i++) {
-        if (_labels != null && i < _labels!.length) {
-          results[_labels![i]] = outputArray[0][i];
+    // YOLO 출력 처리
+    final results = <String, double>{};
+    const int numClasses = 80;
+    const int numBoxes = 5;
+    const double confidenceThreshold = 0.1; // 최소 신뢰도 임계값
+
+    for (var y = 0; y < 13; y++) {
+      for (var x = 0; x < 13; x++) {
+        for (var b = 0; b < numBoxes; b++) {
+          var offset = b * (5 + numClasses);
+          var confidence = _sigmoid(outputArray[0][y][x][offset + 4]); // sigmoid 적용
+
+          if (confidence > confidenceThreshold) {
+            // 클래스별 확률 계산
+            var maxClass = 0;
+            var maxProb = 0.0;
+
+            for (var c = 0; c < numClasses; c++) {
+              var prob = _sigmoid(outputArray[0][y][x][offset + 5 + c]); // sigmoid 적용
+              if (prob > maxProb) {
+                maxProb = prob;
+                maxClass = c;
+              }
+            }
+
+            var score = confidence * maxProb;
+            if (score > confidenceThreshold && _labels != null && maxClass < _labels!.length) {
+              var className = _labels![maxClass];
+              if (!results.containsKey(className) || results[className]! < score) {
+                results[className] = score;
+              }
+            }
+          }
         }
       }
-
-      // 확률이 높은 순으로 정렬
-      final sortedResults = Map.fromEntries(
-        results.entries.toList()
-          ..sort((a, b) => b.value.compareTo(a.value))
-      );
-
-      if (mounted) {
-        setState(() {
-          _recognition = sortedResults;
-        });
-      }
-
-    } catch (e) {
-      debugPrint('Error processing image: $e');
-    } finally {
-      _isDetecting = false;
     }
+
+    // 확률이 높은 순으로 정렬
+    final sortedResults = Map.fromEntries(
+      results.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value))
+    );
+
+    if (mounted) {
+      setState(() {
+        _recognition = sortedResults;
+      });
+    }
+
+  } catch (e) {
+    debugPrint('Error processing image: $e');
+  } finally {
+    _isDetecting = false;
   }
+}
+
+// Sigmoid 함수 추가
+double _sigmoid(double x) {
+  return 1.0 / (1.0 + exp(-x));
+}
 
   img.Image? _convertBGRA8888ToImage(CameraImage cameraImage) {
     try {
